@@ -6,6 +6,22 @@
 ng add @ngrx/store @ngrx-devtools
 ```
 
+## Define AppState, ReducerMap and MetaReducer
+
+### app/reducers/index.ts
+
+```ts
+export interface AppState {
+}
+
+export const reducers: ActionReducerMap<AppState> = {
+}
+
+export const metaReducers: MetaReducer<AppState>[] = !environment.production ? [] : [];
+```
+
+## Import StoreModule `forRoot`. Instrument StoreDevToolsModule
+
 ### app.module.ts
 
 ```ts
@@ -26,23 +42,13 @@ const routes: Routes = [
 })
 ```
 
-### app/reducers/index.ts
-
-```ts
-export interface AppState {
-}
-
-export const reducers: ActionReducerMap<AppState> = {
-}
-
-export const metaReducers: MetaReducer<AppState>[] = !environment.production ? [] : [];
-```
-
 ## Generate Feature Store
 
 ```cmd
 ng generate store auth/Auth --module auth.module.ts
 ```
+
+> EffectsModule ???
 
 ### auth.module.ts
 
@@ -66,7 +72,7 @@ export class AuthModule {
 }
 ```
 
-## Define Action
+## Define Actions
 
 ### auth.actions.ts
 
@@ -117,6 +123,8 @@ export class LoginComponent {
 }
 ```
 
+## Define Feature State, Initial State and Reducer
+
 ### auth/reducers/index.ts
 
 ```ts
@@ -153,10 +161,12 @@ export const authReducer = createReducer(
 
 ```ts
 export const selectAuthState = createFeatureSelector('auth');
+
 export const isLoggedIn = createSelector(
     selectAuthState,
     auth => !!auth.user
 );
+
 export const isLoggedOut = createSelector(
     isLoggedIn,
     loggedIn => !loggedIn
@@ -229,7 +239,7 @@ export class AuthGuard implements CanActivate {
 - Used to handle store side effects
 - Effects service intercepts all actions dispatched in the app
 - It can create action as side effect from specific actions
-- Side effect can be async dispatching more actions or sync without no further action
+- Side effect can be async dispatching more actions or sync with no further action
 
 ### auth.effects.ts
 
@@ -262,9 +272,98 @@ export class AuthEffects {
 }
 ```
 
+## Router State in Store for Time Travel Debugging
+
+### app.module.ts
+
+```ts
+@NgModule({
+    imports: [
+        // ...
+        StoreRouterConnectingModule.forRoot({
+            stateKey: 'router',
+            routerState: RouterState.Minimal
+        })
+    ]
+})
+```
+
+### reducers/index.ts
+
+```ts
+export const reducers: ActionReducerMap<AppState> = {
+    router: routerReducer,
+};
+```
+
+## NgRx Runtime Checks
+
+State should never be mutated for below reasons:
+1. `ChangeDetectionStrategy.OnPush` works only with immutable state
+2. Time travel debugging requires individual state snapshots
+
+### app.module.ts
+
+```ts
+@NgModule({
+    imports: [
+        StoreModule.forRoot(reducers, {
+            metaReducers,
+            runtimeChecks: {
+                strictStateImmutability: true,
+                strictStateSerializability: true,
+                strictActionImmutability: true,
+                strictActionSerializability: true,
+            }
+        })
+    ]
+})
+```
+
+## Meta Reducers
+
+- Meta reducers get called before normal reducers
+- Used to intercept state and action before normal reducers are called
+
+### reducers/index.ts
+
+```ts
+export function logger(reducer: ActionReducer<any>) {
+    return (state, action) => {
+        console.log('state before:', state);
+        console.log('action', action);
+        return reducer(state, action);
+    }
+} 
+
+export const metaReducers: MetaReducer<AppState>[] = !environment.production ? [logger] : [];
+```
+
 ## NgRx Entity
 
+- Define FeatureState by extending `EntityState<T>` 
+- Data Dictionary with id and entity objects as key value pairs
+- Easy CRUD operation on store using `EntityAdaptor`
 - Call API once and get data from store thereafter
+
+### course.ts
+
+```ts
+export interface Course {
+    id: number;
+    seqNo: number;
+    // ...
+}
+
+export function compareCourses(c1: Course, c2: Course) {
+    const compare = c1.seqNo - c2.seqNo;
+    if (compare > 0) {
+        return 1;
+    } else if (compare < 0) {
+        return -1;
+    } else return 0;
+}
+```
 
 ### course.action.ts
 
@@ -286,6 +385,7 @@ import * as CourseActions from './course.actions';
 
 export {CourseActions};
 ```
+> loading ???
 
 ### courses.resolver.ts
 
@@ -332,6 +432,218 @@ export class CoursesEffects {
     constructor(
         private actions$: Actions,
         private coursesHttpService: CoursesHttpService,
+    ) {}
+}
+```
+
+## Read State from Store if loaded
+
+- `allCoursesLoaded` prop will help decide if state is loaded in store or not
+
+### courses.reducers.ts
+
+```ts
+export interface CoursesState extends EntityState<Course> {
+    allCoursesLoaded: boolean
+}
+
+export const adapter = createEntityAdapter<Course>({
+    sortComparer: compareCourses
+});
+
+export const initialCoursesState = adapter.getInitialState({
+    allCoursesLoaded: false
+});
+
+export const coursesReducer = createReducer(
+    initialCoursesState,
+    on(
+        CourseActions.allCoursesLoaded,
+        (state, action) => adapter.addAll(action.courses, { ...state, allCoursesLoaded: true })
+    )
+);
+
+export {
+    selectAll,
+} = adapter.getSelectors();
+```
+
+### courses.module.ts
+
+```ts
+@NgModule({
+    imports: [
+        // ...
+        StoreModule.forFeature('courses', coursesReducer)
+    ]
+})
+```
+
+### courses.selectors.ts
+
+```ts
+import * as fromCourses from './reducers/courses.reducers';
+
+export const selectCoursesState = createFeatureSelector<CoursesState>('courses');
+
+export const selectAllCourses = createSelector(
+    selectCoursesState,
+    fromCourses.selectAll
+);
+
+export const selectBeginnerCourses = createSelector(
+    selectAllCourses,
+    courses => courses.filter(course => course.category === 'BEGINNER')
+);
+
+export const selectAdvanceCourses = createSelector(
+    selectAllCourses,
+    courses => courses.filter(course => course.category === 'ADVANCE')
+);
+
+export const selectPromoTotal = createSelector(
+    selectAllCourses,
+    courses => courses.filter(course => course.promo).length 
+);
+
+export const areCoursesLoaded = createSelector(
+    selectCoursesState,
+    state => state.allCoursesLoaded
+)
+```
+
+### home.component.ts
+
+```ts
+export class HomeComponent implements OnInit {
+    promoTotal$: Observable<number>;
+    loading$: Observable<boolean>;
+    beginnerCourses$: Observable<Course[]>;
+    advanceCourses$: Observable<Course[]>;
+
+    constructor(
+        private store: Store<AppStore>
+    ) {}
+
+    ngOnInit() {
+        this.promoTotal$ = this.store.pipe(
+            select(selectPromoTotal)
+        );
+
+        this.beginnerCourses$ = this.store.pipe(
+            select(selectBeginnerCourses)
+        );
+
+        this.advanceCourses$ = this.store.pipe(
+            select(selectAdvanceCourses)
+        );
+    }
+}
+```
+
+### courses.resolver.ts
+
+```ts
+export class CoursesResolver implements Resolve<any> {
+    loading: boolean = false;
+    
+    constructor(
+        private store: Store<AppState>
+    ) {}
+
+    resolve(
+        route: ActivatedRouteSnapshot,
+        state: RouterStateSnapshot
+    ): Observable<any> {
+        return this.store.pipe(
+            select(areCoursesLoaded),
+            tap(coursesLoaded => {
+                if (!this.loading && !coursesLoaded) {
+                    this.loading = true;
+                    this.store.dispatch(loadAllCourses());
+                }
+            }),
+            filter(coursesLoaded => coursesLoaded),
+            first(),
+            finalize(() => this.loading = false)
+        );
+
+    }
+}
+```
+
+## Update Course Entity
+
+### course.actions.ts
+
+```ts
+// ...
+export const courseUpdated = createAction(
+    '[Edit Course Dialog] Course Updated',
+    props<{update: Update<Course>}>()
+);
+```
+
+### edit-course-dialog.component.ts
+
+```ts
+export class EditCourseDialogCompoent {
+    constructor(
+        private store: Store<AppState>,
+    ) {}
+
+    onSave() {
+        const course: Course = {
+            ...this.course,
+            ...this.form.value
+        };
+
+        const update: Update<Course> = {
+            id: this.course.id,
+            changes: course
+        }
+
+        this.store.dispatch(courseUpdated({update}))
+    }
+}
+```
+
+## Editing Entity
+
+### courses.reducers.ts
+
+```ts
+// ...
+export const coursesReducer = createReducer(
+    initialCoursesState,
+    on(
+        CourseActions.courseUpdated,
+        (state, action) => adapter.updateOne(action.update, state)
+    )
+);
+```
+
+### courses.effects.ts
+
+```ts
+export class CoursesEffects {
+    // ...
+
+    saveCourse$ = createEffect(
+        () => this.actions$
+            .pipe(
+                ofType(CourseActions.courseUpdated),
+                concatMap(action => this.coursesHttpService.saveCourse(
+                    action.update.id,
+                    action.update.course
+                ))
+            ),
+            { dispatch: false }
+    )
+
+    constructor(
+        private actions$: Actions,
+        private courseHttpService: CourseHttpService
     ) {}
 }
 ```
@@ -383,28 +695,35 @@ reducers/index.ts:
 export const reducers = ActionReducerMap<AppState> = {router: routerReducer() }
 
 Sequence of constructs
-Actions
-State interface
-Initial state
-Reducers
-Selectors
+- State interface
+- Initial state
+- Actions
+- Reducers
+- Selectors
+
 An Entity
-entities as map of id vs value/object
-Array of sorted ids
+- entities as map of id vs value/object
+- Array of sorted ids
+
 NgRx Entity
-Actions classes, constructor with payload
-State interface extends EntityState<T>
-EntityAdapter<T>
-createFeatureSelector for feature level state
-createSelector to apply list of selectors and then project selected state using map or filter or specific value in entities array
+- State interface extends EntityState<T>
+- EntityAdapter<T>
+- Actions classes, constructor with payload
+- createFeatureSelector for feature level state
+- createSelector to apply list of selectors and then project selected state using map or filter or specific value in entities array
+
 Adapter makes writing reducer and selector easy
+
 resolve() spstdff
 return this.store.pipe(select(selectCourseById(courseId)), tap(course=> { if (! course) { this.store.dispatch(new CourseRequested(courseId))}}), filter(course => !!course), first())
+
 Course.effects.ts apomm
 @Effect() loadCourse$ = this.actions$.pipe(ofType<CourseRequested>(CourseActionTypes.CourseRequested), mergeMap(action => this.courseService.findCourseById(action.payload.courseId)), map(course => new CourseLoaded({ course }))),
+
 Course.reducer.ts
 initialState = adapter.getInitialState();
 courses reducer(state = initialState, action: CoursesAction): CoursesState {switch(action.type) { case CourseActionTypes.CourseLoaded: return adapter.addOne(action.payload.course, state); default: { return state; }}}
+
 courses.module.ts
 Imports: [ StoreModule.forFeature('courses', coursesReducer)]
 Get all courses: sps
@@ -418,20 +737,6 @@ allCoursesLoaded = createSelector(selectCoursesState, coursesState => coursesSta
 @Effect() loadAllCourses$ = this.actions$.pipe(ofType<AllCoursesRequested>(CourseActionTypes.AllCoursesRequested), withLatestFrom(this.store.pipe(select(allCoursesLoaded))), filter(([action, allCoursesLoaded]) => !allCoursesLoaded), mergeMap(action => this.courseService.findCourseById(action.payload.courseId)), map(course => new CourseLoaded({ course }))),
 Update Entity:
 save() { const changed = this.form.value; this.coursesService.saveCourse(this.courseId, changes).subscribe(() => { C nst course: Update<Course> = { id: this.courseId, changes}; this.store.dispatch(new CourseSaved({ course }))})}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 ## NgRx Data
